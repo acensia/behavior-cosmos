@@ -4,3 +4,6 @@
 [submodule "cosmos-policy"]
 	path = cosmos-policy
 	url = https://github.com/NVlabs/cosmos-policy
+[submodule "thirdparty/BEHAVIOR-1K"]
+	path = thirdparty/BEHAVIOR-1K
+	url = https://github.com/StanfordVL/BEHAVIOR-1K
