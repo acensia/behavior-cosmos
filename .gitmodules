@@ -1,0 +1,3 @@
+[submodule "vla-evaluation-harness"]
+	path = vla-evaluation-harness
+	url = https://github.com/allenai/vla-evaluation-harness
