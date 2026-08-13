@@ -1,0 +1,16 @@
+# Cosmos Policy — LIBERO (nvidia/Cosmos-Policy-LIBERO-Predict2-2B)
+# Run from the behavior-cosmos repo root (script path resolves against CWD):
+#   uv run --project vla-evaluation-harness vla-eval serve -c configs/cosmos_policy/libero.yaml
+# Matches the reference eval flags in cosmos-policy/LIBERO.md
+# (5 action denoising steps, 16-step open-loop chunks, deterministic seed).
+script: "servers/cosmos_policy.py"
+args:
+  ckpt_path: nvidia/Cosmos-Policy-LIBERO-Predict2-2B
+  config_name: cosmos_predict2_2b_480p_libero__inference_only
+  dataset_stats_path: nvidia/Cosmos-Policy-LIBERO-Predict2-2B/libero_dataset_statistics.json
+  t5_text_embeddings_path: nvidia/Cosmos-Policy-LIBERO-Predict2-2B/libero_t5_embeddings.pkl
+  suite: libero
+  chunk_size: 16
+  num_denoising_steps_action: 5
+  seed: 195
+  port: 8000
