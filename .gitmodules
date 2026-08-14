@@ -7,3 +7,6 @@
 [submodule "thirdparty/BEHAVIOR-1K"]
 	path = thirdparty/BEHAVIOR-1K
 	url = https://github.com/StanfordVL/BEHAVIOR-1K
+[submodule "cosmos-framework"]
+	path = cosmos-framework
+	url = https://github.com/NVIDIA/cosmos-framework.git
