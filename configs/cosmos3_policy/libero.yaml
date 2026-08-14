@@ -1,0 +1,30 @@
+# Cosmos 3 policy — LIBERO-10 (cosmos-framework action_policy_server_libero wrapper)
+#
+# NOTE: checkpoint NOT staged. No Edge-based LIBERO checkpoint exists anywhere; the only
+# public LIBERO SFTs are Nano (16B) raw DCP exports (~90 GB/iter — vetoed as too big),
+# e.g. arunos728/cosmos3-libero10-paper-2k @ iter_000001500 (the default path below).
+# Point checkpoint_path (and config_file / experiment if the training run differs) at
+# your own SFT — a consolidated export (config.json + safetensors) loads standalone.
+#
+# Prereqs (once, on the login node — no GPU needed):
+#   cd cosmos-framework && uv sync --all-extras --group=cu128-train --group=policy-server
+#   (checkpoints/ staged by the download commands in CLAUDE.md)
+#
+# Run from the behavior-cosmos repo root (script/checkpoint paths resolve against CWD).
+script: "servers/cosmos3_policy_server.py"
+args:
+  checkpoint_path: checkpoints/cosmos3-libero10-paper-2k/checkpoints/iter_000001500
+  wan_vae_path: checkpoints/Wan2.2_VAE.pth
+  cosmos_framework_dir: cosmos-framework
+  experiment: action_policy_libero_nano
+  action_normalization: quantile_rot
+  raw_action_dim: 10
+  fps: 20
+  num_steps: 30
+  guidance: 1.0
+  seed: 0
+  image_size: 256
+  domain_name: libero
+  gripper_mode: zero_one
+  chunk_size: 16
+  port: 8000

@@ -3,7 +3,7 @@
 #   uv run --project vla-evaluation-harness vla-eval serve -c configs/cosmos_policy/libero.yaml
 # Matches the reference eval flags in cosmos-policy/LIBERO.md
 # (5 action denoising steps, 16-step open-loop chunks, deterministic seed).
-script: "servers/cosmos_policy.py"
+script: "servers/cosmos_policy_server.py"
 args:
   ckpt_path: nvidia/Cosmos-Policy-LIBERO-Predict2-2B
   config_name: cosmos_predict2_2b_480p_libero__inference_only

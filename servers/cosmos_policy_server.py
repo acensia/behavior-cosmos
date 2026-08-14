@@ -1,17 +1,34 @@
 # /// script
-# requires-python = "~=3.10"
+# requires-python = ">=3.10,<3.11"  # flash-attn cu128.torch27 wheels are cp310-only
 # dependencies = [
 #     "vla-eval",
 #     "cosmos-policy[cu128]",
-#     "numpy>=1.24",
+#     "numpy>=2.0",
 # ]
 #
 # [tool.uv.sources]
 # vla-eval = { path = "../vla-evaluation-harness", editable = true }
 # cosmos-policy = { path = "../cosmos-policy", editable = true }
+# # cosmos-policy's own [tool.uv.sources]/[tool.uv.index] are ignored when it is
+# # consumed as a path dependency — uv only reads sources from the root (this
+# # script), so the cu128 wheel index mappings are replicated here.
+# decord = { index = "cosmos-cu128-torch27" }
+# flash-attn = { index = "cosmos-cu128-torch27" }
+# natten = { index = "cosmos-cu128-torch27" }
+# transformer-engine = { index = "cosmos-cu128-torch27" }
+# torch = { index = "cosmos-cu128-torch27" }
+# torchvision = { index = "cosmos-cu128-torch27" }
+# triton = { index = "cosmos-cu128-torch27" }
+# xformers = { index = "cosmos-cu128-torch27" }
+#
+# [[tool.uv.index]]
+# name = "cosmos-cu128-torch27"
+# url = "https://nvidia-cosmos.github.io/cosmos-dependencies/v1.2.0/cu128_torch27/simple"
+# explicit = true
 #
 # [tool.uv]
 # no-build-isolation-package = ["flash-attn"]
+# override-dependencies = ["numpy>=2.0.0"]
 # ///
 """Cosmos Policy model server for vla-evaluation-harness.
 

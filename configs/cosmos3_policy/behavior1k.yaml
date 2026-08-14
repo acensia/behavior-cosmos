@@ -1,0 +1,37 @@
+# Cosmos 3 Edge (vanilla, zero-shot) — BEHAVIOR-1K R1Pro connection check.
+#
+# PURPOSE: validate the vla-eval <-> model-server connection with raw model output.
+# The vanilla base was pretrained with the behavior1k_lerobot domain (id 22) but has
+# no BEHAVIOR SFT — expect syntactically valid but behaviorally meaningless actions.
+#
+# Contract (matches harness behavior1k benchmark, incl. feat/behavior1k branch):
+#   obs in : images {head, left_wrist, right_wrist} -> resized to 256 sq, concat -> 256x768
+#   act out: (16, 23) chunks, R1Pro absolute joint positions, raw/un-denormalized
+#
+# Run from the behavior-cosmos repo root.
+script: "servers/cosmos3_policy_server.py"
+args:
+  checkpoint_path: checkpoints/Cosmos3-Edge
+  # Vanilla Edge is a diffusers/public HF export: its root config.json has no
+  # model.config.vlm_config.tokenizer node (KeyError in OmniInference._create).
+  # Use the framework's registry config for Cosmos3-Edge instead — same file the
+  # registry pairs with the nvidia/Cosmos3-Edge repo.
+  config_file: cosmos-framework/cosmos_framework/inference/configs/model/Cosmos3-Edge.yaml
+  # That registry config bakes a trainer-local VAE path -> point it at the staged Wan VAE.
+  wan_vae_path: checkpoints/Wan2.2_VAE.pth
+  cosmos_framework_dir: cosmos-framework
+  experiment: ""              # config_file above supplies the model config
+  action_stats_path: ""       # no stats -> raw (un-denormalized) actions
+  action_mode: joint_passthrough
+  raw_action_dim: 23
+  domain_name: behavior1k_lerobot
+  format_prompt_as_json: true # Edge checkpoints train with JSON-structured prompts
+  cameras: [head, left_wrist, right_wrist]
+  image_size: 256
+  fps: 20
+  num_steps: 30
+  guidance: 1.0
+  seed: 0
+  chunk_size: 16
+  send_proprio: false
+  port: 8000

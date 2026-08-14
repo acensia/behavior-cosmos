@@ -1,79 +1,157 @@
 # behavior-cosmos
 
-Serve the NVIDIA **Cosmos Policy** model (NVlabs/cosmos-policy, "cosmos3 policy") behind the
-**vla-evaluation-harness** model-server interface, so it can be evaluated on the harness's
+Serve **NVIDIA Cosmos 3 policy** models (nvidia/cosmos-framework) behind the
+**vla-evaluation-harness** model-server interface, so they can be evaluated on the harness's
 benchmarks (LIBERO first; BEHAVIOR-1K is the eventual target implied by the project name).
+
+> **History**: the project originally targeted NVlabs/cosmos-policy (the Predict2-2B-based
+> "Cosmos Policy" line). The user redirected to the Cosmos 3 line (released 05/2026,
+> `github.com/nvidia/cosmos-framework`). The old server (`servers/cosmos_policy_server.py`,
+> `configs/cosmos_policy/`) is **parked** — functional up to model load but blocked on the
+> gated `nvidia/Cosmos-Predict2-2B-Video2World` base repo (needs HF license + token).
 
 ## Layout
 
 ```
 behavior-cosmos/
-├── vla-evaluation-harness/   # submodule: github.com/allenai/vla-evaluation-harness
-├── cosmos-policy/            # submodule: github.com/NVlabs/cosmos-policy
-├── servers/cosmos_policy.py  # PEP 723 uv-script model server (PredictModelServer subclass)
-├── configs/cosmos_policy/    # server config YAMLs (libero.yaml so far)
+├── vla-evaluation-harness/     # submodule: github.com/allenai/vla-evaluation-harness
+├── cosmos-framework/           # submodule: github.com/NVIDIA/cosmos-framework (Cosmos 3)
+├── cosmos-policy/              # submodule: NVlabs/cosmos-policy (PARKED, predict2 line)
+├── servers/cosmos3_policy_server.py  # ACTIVE: Cosmos 3 wrapper server (PEP 723 uv script)
+├── servers/cosmos_policy_server.py   # parked predict2 server
+├── configs/cosmos3_policy/libero.yaml  # ACTIVE config
+├── checkpoints/                # gitignored: staged model weights (see below)
 └── CLAUDE.md
 ```
 
-Decision: the server lives **out-of-tree** (here, not inside the harness submodule), with the
-uv-script header pointing at both submodules via relative `path` sources. Move it in-tree on a
-harness fork only if upstreaming to allenai later. Another standalone harness checkout exists at
-`~/vla-evaluation-harness` — ignore it; this repo's submodule is authoritative for this project.
+## Cosmos 3 architecture (two processes)
 
-## How the pieces fit
+`servers/cosmos3_policy_server.py` is a **light** vla-eval `PredictModelServer` (no torch).
+On startup it spawns cosmos-framework's official HTTP policy server
+(`cosmos_framework.scripts.action_policy_server_libero`) via `cosmos-framework/.venv/bin/python`
+and translates per request. This mirrors cosmos-framework's own client/server eval split and
+keeps the heavy env (torch 2.10 cu128, flash-attn-3) isolated in the submodule's venv.
 
-- The harness spawns the server via `uv run servers/cosmos_policy.py` (config `script:` path
-  resolves against **CWD** — run `vla-eval` from this repo root) and talks WebSocket+msgpack.
-  See `vla-evaluation-harness/CLAUDE.md` and `CONTRIBUTING.md` ("Adding a Model Server").
-- `CosmosPolicyModelServer` subclasses `PredictModelServer` with `chunk_size=16`; cosmos returns
-  16-step action chunks, the harness chunk buffer serves one action per step (open-loop replay,
-  matching cosmos's own `num_open_loop_steps=16`).
-- Model loading uses `cosmos_policy.experiments.robot.cosmos_utils`:
-  `get_model`, `load_dataset_stats`, `init_t5_text_embeddings_cache`, `get_action`.
-  `PolicyEvalConfig` can't be imported (it lives in `run_libero_eval.py`, which imports the
-  LIBERO simulator), so `servers/cosmos_policy.py` has a local `_CosmosCfg` mirror — keep its
-  defaults in sync with `run_libero_eval.PolicyEvalConfig` if the submodule is bumped.
+Environment (once, login node OK):
+```bash
+cd cosmos-framework && uv sync --all-extras --group=cu128-train --group=policy-server
+```
+(cu128 chosen for the DGX-H100 driver; cu130-train also exists. `.python-version` pins 3.13.)
 
-## Critical mapping details (LIBERO) — verify before trusting results
+Checkpoints staged in `checkpoints/` (gitignored) — **user directive: Edge (4B) models only,
+no Nano** (Nano LIBERO SFTs are ~90 GB/iter raw fp32 DCP — vetoed as too big):
+- `Cosmos3-Edge-Policy-DROID/` — official nvidia policy (8.6 G, ungated, diffusers layout).
+  Serve with `cosmos_framework.scripts.action_policy_server_robolab` + mandatory
+  `--format-prompt-as-json True` (Edge export has no checkpoint.json → nothing inferred).
+  Contract: 3 cams → 640×540 canvas, 8-D `[joint(7), gripper]` proprio in, 32×8 **absolute
+  joint positions** out, raw units, gripper flipped both boundaries. Smoke:
+  `srun -p h100 --gres=gpu:1 --cpus-per-task=8 --mem=96G bash scripts/smoke_droid_edge.sh`.
+  No harness DROID benchmark exists (MolmoSpaces closest; adapter = future work, user said
+  not now).
+- `cosmos-edge-robocasa-bs512/` — `easyminnn/cosmos-edge-robocasa-bs512` (6.3 G consolidated
+  export, iter_000004000; chunk 16, fps 20, domain_name "robocasa"). **BLOCKED on the
+  training fork**: trained with `action_policy_robocasa_edge` experiment from an rlwrld fork;
+  upstream cosmos-framework has NO "robocasa" domain (`domain_utils.get_domain_id` raises) —
+  need the fork (or its domain id + action-space details) to serve faithfully. Harness has a
+  ready `robocasa365` benchmark (12-D actions; mirror `robocasa365_groot.py`).
+- `Cosmos3-Edge/` — vanilla 4B base (8.6 G), staged per user request (post-train substrate;
+  note upstream registers a `behavior1k_lerobot` domain, id 22, 23-D R1Pro actions —
+  BEHAVIOR-1K post-training is natively supported → the project's endgame path).
+- `Wan2.2_VAE.pth` — from `Wan-AI/Wan2.2-TI2V-5B`; needed when serving DCP checkpoints whose
+  config bakes a trainer-local VAE path (`--experiment-overrides
+  model.config.tokenizer.vae_path=...`). Consolidated exports bundle their own VAE.
 
-1. **Image flip**: harness `preprocess_libero_image` flips both axes (`img[::-1, ::-1]`);
-   cosmos `get_libero_image` flips vertically only (`np.flipud`). Server undoes the horizontal
-   flip (`img[:, ::-1]`, `unflip_horizontal: true`). If eval scores are near-zero, check this first.
-2. **Proprio**: harness sends 8-D `[eef_pos(3), axis_angle(3), gripper_qpos(2)]`; cosmos expects
-   9-D `[gripper_qpos(2), eef_pos(3), eef_quat_xyzw(4)]`. Server converts axis-angle→quat.
-   Risk: harness canonicalizes quat sign (w≥0, `vla_eval/rotation.py:quat_to_axisangle`) while
-   robosuite's raw quat may have either sign; cosmos normalizes proprio with dataset stats, so a
-   sign flip could shift inputs. The harness LIBERO benchmark has a `quat_no_antipodal` option —
-   compare a few episodes against cosmos's native eval (`run_libero_eval.py`) if success rates lag.
-3. **Actions**: cosmos outputs unnormalized native LIBERO actions
-   `[dxyz(3), axis-angle delta(3), gripper]`, gripper −1=open/+1=close → passthrough, no inversion
-   (unlike groot which needs `invert_gripper`). Declared spec: `POSITION_DELTA / ROTATION_AA /
-   GRIPPER_CLOSE_POS`.
-4. **T5 embeddings**: instruction embeddings come from the checkpoint's pickle cache. Harness task
-   descriptions (`task["name"]`) must match cosmos's instruction strings; a cache miss triggers an
-   on-the-fly T5 encode (big download, slow first step). Warmup uses the first cached key.
-5. **Resolution/JPEG**: benchmark sends 256px; cosmos resizes to 224 + JPEG-compresses inside
-   `get_action` (`use_jpeg_compression=True`, `trained_with_image_aug=True`) — don't pre-resize.
+## Critical mapping details (LIBERO, Cosmos 3) — replicated from cosmos-framework's own client
+
+Source of truth: `cosmos_framework/simulation/libero/closed_loop_eval.py` +
+`docs/action_policy_libero_posttrain.md` (in the submodule).
+
+1. **Images**: client sends `rotate_180`-ed frames (`img[::-1, ::-1]`); the harness's
+   `preprocess_libero_image` double-flip IS a 180° rotation → **use harness images as-is**
+   (unlike the predict2 line which needed an unflip). agentview + wrist each resized to
+   256×256, concatenated horizontally (`concat_view`, 256×512), base64 PNG.
+2. **Prompt**: task description + "This video contains concatenated views from multiple
+   camera perspectives." + "The left half shows the third-person view; the right half shows
+   the wrist-mounted camera." (byte-identical to training-time augmentors). The cosmos server
+   appends duration/fps/resolution sentences itself (config-driven) — don't add them here.
+3. **No proprioception** — the LIBERO recipe conditions on images only.
+4. **Actions**: cosmos server returns denormalized (`quantile_rot` stats bundled in the
+   submodule) 16×10 chunks in `frame_wise_relative` space `[dpos(3), rot6d(6), gripper(1)]`.
+   rot6d = two **columns** + cross product + SVD projection to SO(3)
+   (`pose_utils.convert_rotation`). Wrapper emits LIBERO-native 7-D
+   `[dpos, axis-angle, gripper]`; spec `POSITION_DELTA / ROTATION_AA / GRIPPER_CLOSE_POS`.
+5. **Gripper**: model emits [0,1]; env wants [-1,1] negative=open → `-(2g-1)` (`zero_one`
+   mode; harness benchmark binarizes by sign afterwards). If grasps fail with a weak
+   checkpoint, cosmos docs suggest binarizing `-sign(2g-1)` — flip `gripper_mode` if needed.
+6. **Serving knobs** (defaults match the official eval): fps=20, num_steps=30 denoising,
+   guidance=1.0, seed=0, chunk_size=16 open-loop. `LIBERO_ROOT` env must exist at spawn
+   (config interpolates `${oc.env:LIBERO_ROOT}` for unused dataloaders; wrapper sets /tmp).
+
+## Environment gotchas (learned the hard way)
+
+- **Script names must not shadow packages**: `cosmos_policy.py` shadowed the `cosmos_policy`
+  package (script dir lands on `sys.path`) — hence `*_server.py` names.
+- **uv ignores a path dependency's `[tool.uv.sources]`/`[tool.uv.index]`** — a PEP 723 script
+  must replicate wheel indexes itself (the parked predict2 server does this for the
+  cosmos-dependencies cu128 index; flash-attn cu128 wheels are cp310-only → its script pins
+  python 3.10). The cosmos3 wrapper avoids all of this by having no heavy deps.
+- **Login node has NO GPU** — anything loading the model needs `srun -p h100 --gres=gpu:1`
+  (a100 partition also exists). `nvidia-smi` doesn't exist on login-1.
+- **Predict2 line HF gating**: `nvidia/Cosmos-Predict2-2B-Video2World` is gated (tokenizer +
+  base weights); `$HF_HOME` = /mnt/cepheid/users/acensia/cache/huggingface, no token present.
 
 ## Commands
 
 ```bash
-# Smoke-test the server (loads model — needs GPU + HF access):
-cd vla-evaluation-harness && uv sync --python 3.11 --all-extras --dev   # once
-uv run vla-eval test -c ../configs/cosmos_policy/libero.yaml            # from harness dir; or use full paths
-# Real eval (from repo root so script: resolves):
-#   vla-eval run with a LIBERO benchmark config + this server config; 1 episode first.
+# Smoke test (GPU; harness venv + cosmos-framework venv + checkpoints must be staged):
+srun -p h100 --gres=gpu:1 --cpus-per-task=8 --mem=128G --time=01:00:00 \
+  bash -lc 'vla-evaluation-harness/.venv/bin/vla-eval test -c configs/cosmos3_policy/libero.yaml -v --timeout 2700'
+# Harness venv (once): cd vla-evaluation-harness && uv sync --python 3.11 --all-extras --dev
+# Real eval: vla-eval run with a LIBERO benchmark config + this server config; 1 episode first.
 ```
 
 ## Status / next steps
 
-- [x] Repo + submodules (harness @ e1ee9ad v0.3.0-36, cosmos-policy @ 18a2acc main)
-- [x] Server scaffold + LIBERO config — **not yet run**; first run will surface uv dependency
-      resolution issues (cosmos-policy `cu128` extra, flash-attn no-build-isolation, torch 2.7 cu128)
-- [ ] First inference smoke test (`vla-eval test`), fix env/dep fallout
-- [ ] 1-episode LIBERO run, then compare success rate vs cosmos native eval (seeds 195/196/197,
-      LIBERO-10: paper numbers in cosmos-policy/LIBERO.md)
-- [ ] RoboCasa config (needs `secondary_image` — third camera; see `get_action`'s robocasa branch)
-- [ ] BEHAVIOR-1K: harness has `configs/benchmarks/behavior1k/` + `behavior1k_baseline.py` server
-      example; no cosmos BEHAVIOR checkpoint exists — likely requires post-training (see
-      nvidia-cosmos/cosmos-cookbook) before serving is meaningful.
+- [x] Repo + submodules (harness @ e1ee9ad, cosmos-policy parked, cosmos-framework added)
+- [x] cosmos-framework env synced: `.venv` (877 pkgs, torch 2.10.0+cu128, python 3.13,
+      openpi-server); run scripts with `PYTHONPATH=<cosmos-framework dir>` (not pip-installed).
+      First sync died on "Disk quota exceeded" (2 TiB cepheid quota) — watch checkpoint bulk.
+- [x] Three Edge checkpoints + Wan VAE staged (see above); all heavy files on /mnt/cepheid
+      (NEVER /mnt/home — user directive)
+- [x] `servers/cosmos3_policy_server.py` (LIBERO wrapper, spawns cosmos HTTP server; CLI
+      verified) + `configs/cosmos3_policy/libero.yaml` (checkpoint not staged — see note in file)
+- [x] `scripts/smoke_droid_edge.sh` + `scripts/smoke_droid_client.py` (openpi WS client) —
+      DROID Edge smoke, srun-ready
+- [x] **BEHAVIOR-1K connection check wired** (user priority: raw zero-shot results first, SFT later):
+      `configs/cosmos3_policy/behavior1k.yaml` serves vanilla `Cosmos3-Edge` via the wrapper's
+      `action_mode: joint_passthrough` — 3 cams (head/left_wrist/right_wrist) → 256×768 concat
+      canvas; (16, 23) raw joint chunks out; spec `joints/23/joint_positions_r1pro` matches the
+      benchmark byte-for-byte (harness cross-checks at HELLO). No stats → un-denormalized output
+      by design. Benchmark side lives on `acensia/feat/behavior1k` harness branch (fetched as
+      remote `acensia` in the submodule; contract identical to main — branch only adds
+      OmniGibson v3.9 / 2026-challenge compat). Wrapper handles missing cameras in
+      `vla-eval test`'s 2-camera stub obs via warn+substitute fallback.
+- [x] **behavior1k connection check PASSED** (2026-08-14, h100): `vla-eval test -c
+      configs/cosmos3_policy/behavior1k.yaml` → 3 steps, success=True, 67 s. Three startup
+      blockers fixed to get there:
+      1. Guardrails: the cosmos server hard-enables them (no CLI flag) and their weights are
+         a gated HF repo (`nvidia/Cosmos-Guardrail1`, no token) → wrapper now spawns via
+         `servers/cosmos3_action_server_main.py`, a shim that applies the framework's own
+         `guardrails=False` override. Guardrails are a generation content filter; unused in
+         policy serving.
+      2. Config: vanilla `Cosmos3-Edge` is a public diffusers export — its root `config.json`
+         has no `model.config.vlm_config.tokenizer` (KeyError in `OmniInference._create`).
+         behavior1k.yaml now passes `config_file:` = the registry's
+         `inference/configs/model/Cosmos3-Edge.yaml`.
+      3. VAE: that registry YAML bakes `bucket_name: bucket` + trainer-local `vae_path` →
+         S3-credential crash. Wrapper's `wan_vae_path` now also emits
+         `model.config.tokenizer.bucket_name=''` (local-path mode) alongside the vae_path
+         override, as ONE `--experiment-overrides` flag (tyro list[str]: repeated flags keep
+         only the last).
+- [ ] **User runs the DROID smoke** (`scripts/smoke_droid_edge.sh`) if wanted
+- [ ] robocasa SFT serving: get the rlwrld fork (or robocasa domain id + action space +
+      normalization) from the user → then wire a robocasa365 wrapper mirroring the LIBERO one
+- [ ] LIBERO: needs an Edge LIBERO SFT (none exists; post-train with cosmos-framework recipe,
+      swapping nano → edge experiment) or accept a Nano DCP
+- [ ] BEHAVIOR-1K: upstream `behavior1k_lerobot` domain exists — post-train Cosmos3-Edge on
+      BEHAVIOR-1K LeRobot data, then serve via the same wrapper pattern
