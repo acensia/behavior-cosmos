@@ -148,10 +148,55 @@ srun -p h100 --gres=gpu:1 --cpus-per-task=8 --mem=128G --time=01:00:00 \
          `model.config.tokenizer.bucket_name=''` (local-path mode) alongside the vae_path
          override, as ONE `--experiment-overrides` flag (tyro list[str]: repeated flags keep
          only the last).
+- [x] **BEHAVIOR-1K fine-tune pipeline built & smoke-tested** (2026-08-14). Single task
+      first (user choice): `turning_on_radio` = task 0 of the 100-task
+      `behavior-1k/2026-challenge-demos` (LeRobot v3, 30 fps, 23-D action, 61-D state,
+      3 RGB cams: zed head 720², realsense wrists 480²). Facts learned:
+      - Full challenge set is 3.27 TB (doesn't fit 2 TiB quota; ~990 GB already used).
+        Per-task RGB-only subset ≈ 1.9 GB via `scripts/stage_behavior1k_task.py`
+        (reads `meta/episodes/chunk-NNN/file-000.parquet` = exactly task NNN's 200 eps,
+        downloads only referenced data parquets + RGB mp4s → valid local LeRobot tree).
+        Staged at `data/behavior1k/task-0000`. Older `lerobot/behavior1k-taskNNNN` HF
+        repos are a DIFFERENT release (256-D state, other cam keys) — don't use.
+      - Upstream cosmos-framework has ONLY the domain constants (id 22, 23-D) plus a
+        purpose-registered `"2,3"` 512×768 canvas in the **480 tier** of
+        `VIDEO_RES_SIZE_INFO` (`data/generator/utils.py`) — the intended b1k layout is a
+        DROID-style portrait composite: head 720² top, wrists 360² side-by-side below
+        → 720×1080 (h/w=1.5, zero padding). `resolution="480"` must be pinned
+        (`resolution=None` picks the 720 tier → wrong canvas).
+      - Observed 23-D action layout (from data, upstream comment is looser):
+        base(3) trunk(4) left_arm(7) left_gripper(1) right_arm(7) right_gripper(1);
+        grippers exactly [-1,1] at dims 14 & 22; all dims within ±2.5; trained RAW
+        (`action_normalization=None`, DROID joint_pos precedent) = passthrough serving.
+      - Everything else authored on submodule branch **`feat/behavior1k-edge-posttrain`**:
+        `Behavior1KLeRobotDataset` (mirrors LIBERO loader; pyav decode forced —
+        lerobot's torchcodec default needs system libav*, absent on nodes),
+        `get_action_behavior1k_sft_dataset`, `action_policy_behavior1k_edge` experiment
+        (EDGE_MODEL_CONFIG + selective ckpting, `encode_exact_durations=[17]` for
+        chunk 16, fresh action heads, offline processor via `EDGE_HF_PATH` local
+        snapshot), TOML (FSDP 4×1, global batch 32×4×accum4=512, max_iter 2000) +
+        launcher; `utils/distributed.py` affinity fix (EINVAL under slurm cgroup —
+        intersect with `sched_getaffinity`).
+      - Trainer needs DCP: `checkpoints/Cosmos3-Edge-DCP` (6.3 G) via
+        `convert_model_to_dcp` (CPU-safe; on login-1 needed venv symlink
+        `nvidia/cuda_cudart → cuda_runtime` for transformer_engine's cudart probe).
+      - 1-GPU 5-iter smoke PASSED (`scripts/smoke_behavior1k_edge.sh`, loss 14.3→13.8,
+        DCP save OK; ~0.65 s/iter at batch 4). Hydra tail-override path for parallelism
+        is `model.config.parallelism.*` (NOT `model.parallelism.*`).
+- [ ] **Training run**: `scripts/train_behavior1k_edge.sbatch` (1×4 H100, ~est. ≤12 h)
+      — job 169728 submitted 2026-08-14. Outputs →
+      `outputs/train/cosmos3_action_behavior1k/action_sft/action_policy_behavior1k_edge/`.
+- [ ] **Serve the fine-tune**: serve straight from DCP (skip `export_model` — its
+      `_build_edge_policy_metadata` expects the internal dataloader layout and crashes on
+      the OSS `PackingDataLoader` shape). Update the wrapper for behavior1k SFT serving:
+      camera composite must switch to the TRAINING layout (head top 720², wrists 360²
+      below → 512×768 canvas) + byte-identical prompt sentence
+      (`Behavior1KLeRobotDataset.CONCAT_VIEW_LAYOUT_DESCRIPTION`), NOT the zero-shot
+      256×768 horizontal strip in `configs/cosmos3_policy/behavior1k.yaml`.
+- [ ] Scale up: more tasks via `stage_behavior1k_task.py --task N` (~2 GB each), swap
+      BEHAVIOR1K_ROOT to a merged root or multiple dataset entries.
 - [ ] **User runs the DROID smoke** (`scripts/smoke_droid_edge.sh`) if wanted
 - [ ] robocasa SFT serving: get the rlwrld fork (or robocasa domain id + action space +
       normalization) from the user → then wire a robocasa365 wrapper mirroring the LIBERO one
 - [ ] LIBERO: needs an Edge LIBERO SFT (none exists; post-train with cosmos-framework recipe,
       swapping nano → edge experiment) or accept a Nano DCP
-- [ ] BEHAVIOR-1K: upstream `behavior1k_lerobot` domain exists — post-train Cosmos3-Edge on
-      BEHAVIOR-1K LeRobot data, then serve via the same wrapper pattern
