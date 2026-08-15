@@ -157,6 +157,10 @@ class Cosmos3PolicyModelServer(PredictModelServer):
         format_prompt_as_json: bool | None = None,
         send_proprio: bool = False,
         cameras: list[str] | None = None,
+        camera_layout: str = "horizontal",
+        augment_prompt: bool = True,
+        view_description: str = "",
+        extra_env: dict[str, str] | None = None,
         server_url: str = "",
         cosmos_port: int = 0,
         startup_timeout: float = 1800.0,
@@ -170,10 +174,18 @@ class Cosmos3PolicyModelServer(PredictModelServer):
         super().__init__(chunk_size=chunk_size, action_ensemble=action_ensemble, **kwargs)
         if action_mode not in ("libero_rot6d", "joint_passthrough"):
             raise ValueError(f"Unknown action_mode={action_mode!r}. Use libero_rot6d/joint_passthrough.")
+        if camera_layout not in ("horizontal", "head_top_wrists_bottom"):
+            raise ValueError(
+                f"Unknown camera_layout={camera_layout!r}. Use horizontal/head_top_wrists_bottom."
+            )
         self.image_size = image_size
         self.domain_name = domain_name
         self.gripper_mode = gripper_mode
         self.cameras = list(cameras) if cameras else ["agentview", "wrist"]
+        self.camera_layout = camera_layout
+        self.augment_prompt_enabled = augment_prompt
+        if camera_layout == "head_top_wrists_bottom" and len(self.cameras) != 3:
+            raise ValueError("camera_layout=head_top_wrists_bottom needs exactly 3 cameras (head, left, right).")
         self.raw_action_dim = raw_action_dim
         self.action_mode = action_mode
         self.send_proprio = send_proprio
@@ -243,6 +255,15 @@ class Cosmos3PolicyModelServer(PredictModelServer):
             # The experiment config interpolates ${oc.env:LIBERO_ROOT} for its
             # (unused at inference) dataloaders — any existing dir satisfies it.
             env.setdefault("LIBERO_ROOT", "/tmp")
+            # Per-experiment env interpolations (e.g. BEHAVIOR1K_ROOT, EDGE_HF_PATH).
+            # Values are paths by design; resolved against the wrapper's CWD (repo root).
+            for key, value in (extra_env or {}).items():
+                env[key] = str(self._resolve(str(value)))
+            if view_description:
+                # The shim patches ActionPromptJsonFormatter to inject this as
+                # additional_view_description, reproducing the training-time
+                # cinematography.framing byte-for-byte (the stock server omits it).
+                env["COSMOS3_VIEW_DESCRIPTION"] = view_description
 
             logger.info("Spawning cosmos action server: %s", " ".join(cmd))
             self._proc = subprocess.Popen(cmd, cwd=str(cosmos_dir), env=env)
@@ -320,7 +341,7 @@ class Cosmos3PolicyModelServer(PredictModelServer):
     # Observation / action translation
     # ------------------------------------------------------------------
 
-    def _encode_concat_view(self, images: dict[str, np.ndarray]) -> str:
+    def _gather_camera_arrays(self, images: dict[str, np.ndarray]) -> list[np.ndarray]:
         views: list[np.ndarray] = []
         values = list(images.values())
         for i, cam in enumerate(self.cameras):
@@ -339,17 +360,46 @@ class Cosmos3PolicyModelServer(PredictModelServer):
             arr = np.asarray(img)
             if arr.dtype != np.uint8:
                 arr = (arr * 255.0).round().astype(np.uint8) if arr.max() <= 1.0 else arr.astype(np.uint8)
-            pil = Image.fromarray(arr)
-            if pil.size != (self.image_size, self.image_size):
-                pil = pil.resize((self.image_size, self.image_size), resample=Image.Resampling.BILINEAR)
-            views.append(np.asarray(pil, dtype=np.uint8))
-        concat = np.concatenate(views, axis=1) if len(views) > 1 else views[0]
+            views.append(arr)
+        return views
+
+    @staticmethod
+    def _resize(arr: np.ndarray, size: tuple[int, int]) -> np.ndarray:
+        pil = Image.fromarray(arr)
+        if pil.size != size:
+            pil = pil.resize(size, resample=Image.Resampling.BILINEAR)
+        return np.asarray(pil, dtype=np.uint8)
+
+    def _compose_views(self, views: list[np.ndarray]) -> np.ndarray:
+        if self.camera_layout == "head_top_wrists_bottom":
+            # Training-time BEHAVIOR-1K composite (Behavior1KLeRobotDataset):
+            # head square on top at its native size, wrists at half size
+            # side-by-side below -> (3H/2, W), h/w = 1.5 (the "2,3" 512x768
+            # canvas at the 480 tier, zero padding). Size-agnostic: the head
+            # camera's native resolution sets the scale (720 in OmniGibson).
+            head, left, right = views
+            side = int(head.shape[0])
+            head = self._resize(head, (side, side))
+            half = side // 2
+            left = self._resize(left, (half, half))
+            right = self._resize(right, (half, half))
+            bottom = np.concatenate([left, right], axis=1)  # (H/2, W)
+            return np.concatenate([head, bottom], axis=0)  # (3H/2, W)
+        # horizontal: each view resized to image_size square, concatenated left-to-right.
+        views = [self._resize(v, (self.image_size, self.image_size)) for v in views]
+        return np.concatenate(views, axis=1) if len(views) > 1 else views[0]
+
+    def _encode_concat_view(self, images: dict[str, np.ndarray]) -> str:
+        concat = self._compose_views(self._gather_camera_arrays(images))
         buf = io.BytesIO()
         Image.fromarray(concat).save(buf, format="PNG")
         return base64.b64encode(buf.getvalue()).decode("ascii")
 
     def _augment_prompt(self, task_description: str) -> str:
-        if len(self.cameras) <= 1:
+        # augment_prompt=False: send the bare task description (training-time
+        # ai_caption). Layout text then reaches the model via the JSON prompt's
+        # cinematography.framing (shim-injected view_description), not the caption.
+        if not self.augment_prompt_enabled or len(self.cameras) <= 1:
             return task_description
         prompt = _append_prompt_sentence(task_description, _CONCAT_VIEW_SENTENCE)
         return _append_prompt_sentence(prompt, _layout_sentence(self.cameras))
@@ -382,7 +432,11 @@ class Cosmos3PolicyModelServer(PredictModelServer):
 
     def _warmup(self) -> None:
         logger.info("Warmup inference...")
-        dummy = np.zeros((self.image_size, self.image_size * max(1, len(self.cameras)), 3), dtype=np.uint8)
+        if self.camera_layout == "head_top_wrists_bottom":
+            side = (2 * self.image_size) // 3  # e.g. image_size=768 -> 512-wide, 768-tall composite
+            dummy = np.zeros((side + side // 2, side, 3), dtype=np.uint8)
+        else:
+            dummy = np.zeros((self.image_size, self.image_size * max(1, len(self.cameras)), 3), dtype=np.uint8)
         buf = io.BytesIO()
         Image.fromarray(dummy).save(buf, format="PNG")
         b64 = base64.b64encode(buf.getvalue()).decode("ascii")

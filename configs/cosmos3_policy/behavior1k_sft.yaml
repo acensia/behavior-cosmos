@@ -1,0 +1,44 @@
+# Cosmos 3 Edge — BEHAVIOR-1K SFT (turning_on_radio, 2000-iter fine-tune).
+#
+# Serves the DCP checkpoint straight from the training run (export_model is
+# broken for OSS Edge action runs). Everything below mirrors the TRAINING
+# contract of the action_policy_behavior1k_edge recipe:
+#   obs in : {head 720², left_wrist 480², right_wrist 480²} composed as
+#            head-on-top / wrists-half-size-below -> 720x1080 portrait (2:3),
+#            scaled server-side to the exact-aspect 512x768 canvas (480 tier)
+#   prompt : bare task description as ai_caption; the concat-layout sentence
+#            reaches cinematography.framing via the shim's view_description
+#            injection (byte-identical to Behavior1KLeRobotDataset)
+#   act out: (16, 23) chunks, R1Pro absolute joint positions, raw (trained
+#            with action_normalization=None -> passthrough)
+#
+# Run from the behavior-cosmos repo root.
+script: "servers/cosmos3_policy_server.py"
+args:
+  checkpoint_path: outputs/train/cosmos3_action_behavior1k/action_sft/action_policy_behavior1k_edge/checkpoints/iter_000002000
+  experiment: action_policy_behavior1k_edge   # registered on the feat/behavior1k-edge-posttrain branch
+  config_file: ""
+  wan_vae_path: checkpoints/Wan2.2_VAE.pth
+  cosmos_framework_dir: cosmos-framework
+  action_stats_path: ""       # trained raw -> serve raw (passthrough)
+  action_mode: joint_passthrough
+  raw_action_dim: 23
+  domain_name: behavior1k_lerobot
+  format_prompt_as_json: true
+  cameras: [head, left_wrist, right_wrist]
+  camera_layout: head_top_wrists_bottom
+  augment_prompt: false       # bare task text; layout lives in framing (below)
+  # MUST stay byte-identical to Behavior1KLeRobotDataset.CONCAT_VIEW_LAYOUT_DESCRIPTION:
+  view_description: "The top row is from the head-mounted camera. The bottom row contains the left and right wrist-mounted camera views, concatenated horizontally."
+  # The experiment config interpolates these env vars at load time:
+  extra_env:
+    BEHAVIOR1K_ROOT: data/behavior1k/task-0000
+    EDGE_HF_PATH: checkpoints/Cosmos3-Edge
+  image_size: 768             # composite height after server-side scale -> 512x768 canvas
+  fps: 30                     # dataset-native fps (training conditioning_fps)
+  num_steps: 30
+  guidance: 1.0
+  seed: 0
+  chunk_size: 16
+  send_proprio: false
+  port: 8000
