@@ -41,4 +41,5 @@ args:
   seed: 0
   chunk_size: 16
   send_proprio: false
-  port: 8000
+  # NOTE: no `port:` here — the harness bind address comes from run_server's
+  # --address flag (see scripts/serve_behavior1k_sft.sbatch).
