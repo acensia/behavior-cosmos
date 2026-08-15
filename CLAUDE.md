@@ -183,9 +183,18 @@ srun -p h100 --gres=gpu:1 --cpus-per-task=8 --mem=128G --time=01:00:00 \
       - 1-GPU 5-iter smoke PASSED (`scripts/smoke_behavior1k_edge.sh`, loss 14.3→13.8,
         DCP save OK; ~0.65 s/iter at batch 4). Hydra tail-override path for parallelism
         is `model.config.parallelism.*` (NOT `model.parallelism.*`).
-- [ ] **Training run**: `scripts/train_behavior1k_edge.sbatch` (1×4 H100, ~est. ≤12 h)
-      — job 169728 submitted 2026-08-14. Outputs →
-      `outputs/train/cosmos3_action_behavior1k/action_sft/action_policy_behavior1k_edge/`.
+- [x] **Training run COMPLETE** (2026-08-15): 2000/2000 iters, loss 14.3 → ~0.88.
+      Ran as job 169728 (TIMEOUT at 24 h @ iter 1928 — real speed ~45.5 s/iter, not the
+      ≤12 h estimate) + resume job 170486 (auto-resumed from `latest_checkpoint.txt` at
+      iter 1500; 6h53m). DCP checkpoints at iters 500/1000/1500/**2000** (30 G each incl.
+      optimizer state) →
+      `outputs/train/cosmos3_action_behavior1k/action_sft/action_policy_behavior1k_edge/checkpoints/`.
+      Run-1 log archived as `logs/action_policy_behavior1k_edge_sft.run1-iter0-1928.log`
+      (the launcher's tee truncates on restart). A 2-GPU variant recipe
+      (`*_2gpu.toml`, grad_accum 8 = same global batch 512) is committed for other
+      machines; branches pushed to `acensia/behavior-cosmos@feat/behavior1k-edge-finetune`
+      + `acensia/cosmos-framework@feat/behavior1k-edge-posttrain` (.gitmodules points at
+      the fork — the submodule commit doesn't exist upstream).
 - [ ] **Serve the fine-tune**: serve straight from DCP (skip `export_model` — its
       `_build_edge_policy_metadata` expects the internal dataloader layout and crashes on
       the OSS `PackingDataLoader` shape). Update the wrapper for behavior1k SFT serving:
