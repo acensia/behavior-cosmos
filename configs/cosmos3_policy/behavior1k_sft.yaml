@@ -28,6 +28,7 @@ args:
   cameras: [head, left_wrist, right_wrist]
   camera_layout: head_top_wrists_bottom
   augment_prompt: false       # bare task text; layout lives in framing (below)
+  caption_style: underscored  # harness humanizes task names; training used raw "turning_on_radio"
   # MUST stay byte-identical to Behavior1KLeRobotDataset.CONCAT_VIEW_LAYOUT_DESCRIPTION:
   view_description: "The top row is from the head-mounted camera. The bottom row contains the left and right wrist-mounted camera views, concatenated horizontally."
   # The experiment config interpolates these env vars at load time:

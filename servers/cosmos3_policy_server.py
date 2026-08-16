@@ -159,6 +159,7 @@ class Cosmos3PolicyModelServer(PredictModelServer):
         cameras: list[str] | None = None,
         camera_layout: str = "horizontal",
         augment_prompt: bool = True,
+        caption_style: str = "as_is",
         view_description: str = "",
         extra_env: dict[str, str] | None = None,
         server_url: str = "",
@@ -184,6 +185,9 @@ class Cosmos3PolicyModelServer(PredictModelServer):
         self.cameras = list(cameras) if cameras else ["agentview", "wrist"]
         self.camera_layout = camera_layout
         self.augment_prompt_enabled = augment_prompt
+        if caption_style not in ("as_is", "underscored"):
+            raise ValueError(f"Unknown caption_style={caption_style!r}. Use as_is/underscored.")
+        self.caption_style = caption_style
         if camera_layout == "head_top_wrists_bottom" and len(self.cameras) != 3:
             raise ValueError("camera_layout=head_top_wrists_bottom needs exactly 3 cameras (head, left, right).")
         self.raw_action_dim = raw_action_dim
@@ -396,6 +400,11 @@ class Cosmos3PolicyModelServer(PredictModelServer):
         return base64.b64encode(buf.getvalue()).decode("ascii")
 
     def _augment_prompt(self, task_description: str) -> str:
+        # caption_style=underscored: the harness humanizes BEHAVIOR-1K task names
+        # (replace("_", " ")), but training captions are the raw underscored
+        # tasks.parquet names — invert the transform for byte parity.
+        if self.caption_style == "underscored":
+            task_description = task_description.strip().replace(" ", "_")
         # augment_prompt=False: send the bare task description (training-time
         # ai_caption). Layout text then reaches the model via the JSON prompt's
         # cinematography.framing (shim-injected view_description), not the caption.
