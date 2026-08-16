@@ -1,12 +1,15 @@
 [submodule "vla-evaluation-harness"]
 	path = vla-evaluation-harness
-	url = https://github.com/allenai/vla-evaluation-harness
+	url = https://github.com/acensia/vla-evaluation-harness
+	branch = feat/behavior1k
 [submodule "cosmos-policy"]
 	path = cosmos-policy
 	url = https://github.com/NVlabs/cosmos-policy
+	ignore = untracked
 [submodule "thirdparty/BEHAVIOR-1K"]
 	path = thirdparty/BEHAVIOR-1K
 	url = https://github.com/StanfordVL/BEHAVIOR-1K
 [submodule "cosmos-framework"]
 	path = cosmos-framework
 	url = https://github.com/acensia/cosmos-framework.git
+	branch = feat/behavior1k-edge-posttrain
