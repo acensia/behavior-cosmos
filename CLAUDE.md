@@ -202,6 +202,22 @@ srun -p h100 --gres=gpu:1 --cpus-per-task=8 --mem=128G --time=01:00:00 \
       below → 512×768 canvas) + byte-identical prompt sentence
       (`Behavior1KLeRobotDataset.CONCAT_VIEW_LAYOUT_DESCRIPTION`), NOT the zero-shot
       256×768 horizontal strip in `configs/cosmos3_policy/behavior1k.yaml`.
+- [x] **State-conditioned recipe added** (2026-08-17): the vision-only fine-tune ignores the
+      demos' 61-D `observation.state` (Cosmos 3 ingests state via the action channel —
+      `use_state` prepends state as a conditioned action row 0, DROID `joint_pos` precedent;
+      LIBERO recipe, which ours mirrored, doesn't). New experiment
+      `action_policy_behavior1k_edge_state` (separate ckpt dir, no resume collision):
+      `Behavior1KLeRobotDataset(use_state=True)` projects 61-D state → 23-D action layout
+      (`state_to_action_layout`; mapping found empirically at corr 0.99+/dim: base←state[0:3],
+      trunk←[53:57], Larm←[3:10], Lgrip←[24], Rarm←[28:35], Rgrip←[50]; gripper aperture
+      [0,0.05] m → ±1) and prepends it → 17 action rows vs 17 frames = transforms "Case B"
+      (row 0 conditioned). TOML_FILE now overridable in both launchers; new
+      `*_state{,_2gpu}.toml` + `scripts/train_behavior1k_edge_state{,_2gpu}.sbatch` +
+      `scripts/smoke_behavior1k_edge_state.sh`. Retrain required (old ckpt never saw a state
+      row). NOTE serving the state ckpt needs wrapper work: map harness proprio → same 23-D
+      action-layout row 0 + `send_proprio: true` (libero server has no use_state path —
+      mirror `action_policy_server_robolab.py` lines 520-540, strip row 0 from output);
+      harness proprio layout is UNVERIFIED vs the demos' 61-D state ordering — validate first.
 - [ ] Scale up: more tasks via `stage_behavior1k_task.py --task N` (~2 GB each), swap
       BEHAVIOR1K_ROOT to a merged root or multiple dataset entries.
 - [ ] **User runs the DROID smoke** (`scripts/smoke_droid_edge.sh`) if wanted

@@ -263,7 +263,40 @@ Contract checks that already bit us once:
 A golden-trajectory probe (real demo frames → live server vs. ground-truth
 actions) validated the whole path: 0.99+ correlation per joint block.
 
-## 6. Gotchas index
+## 6. State-conditioned variant (`action_policy_behavior1k_edge_state`)
+
+The recipe above is vision-only — the demos' 61-D `observation.state` never
+reaches the model (see the "61-D Blind Spot" findings memo). Cosmos 3 ingests
+robot state through the *action channel*: with `use_state=True` the current
+state, expressed in the action layout, is prepended as action row 0 and the
+transform marks it as a condition frame (held fixed during denoising — the
+DROID `joint_pos` recipe's mechanism). The `_state` experiment enables this:
+
+- `Behavior1KLeRobotDataset(use_state=True)` reads `observation.state` and
+  projects it to the 23-D action layout via `state_to_action_layout`. The
+  61→23 mapping was identified empirically (corr 0.99+ per dim):
+  base←state[0:3] (measured base velocity), trunk←state[53:57],
+  left arm←state[3:10], left gripper←state[24], right arm←state[28:35],
+  right gripper←state[50]; grippers are finger aperture in meters [0, 0.05]
+  (0.05 = open = action +1), rescaled to ±1.
+- 17 action rows against 17 video frames triggers the transform's "Case B" →
+  row 0 conditioned, rows 1–16 predicted. `encode_exact_durations=[17]`
+  already matches.
+- Registered as a **separate experiment** (separate job name → separate
+  checkpoint dir) so a new run never auto-resumes from the finished
+  vision-only checkpoints.
+- Launch: same launchers with `TOML_FILE=examples/toml/sft_config/action_policy_behavior1k_edge_state{,_2gpu}.toml`,
+  or from the parent repo `sbatch scripts/train_behavior1k_edge_state.sbatch`
+  (smoke: `scripts/smoke_behavior1k_edge_state.sh`).
+- **Serving the state checkpoint needs wrapper changes** (not yet done): send
+  proprio from the harness, map it onto the same 23-D action-layout row, fill
+  action row 0, and strip it from the returned chunk — mirror
+  `action_policy_server_robolab.py`'s `use_state` handling; the libero server
+  script the wrapper spawns has no such path today. Caveat: the harness's
+  proprio layout is NOT verified to equal the demos' 61-D `observation.state`
+  ordering — validate the mapping against demo data before trusting it.
+
+## 7. Gotchas index
 
 - `resolution="480"` mandatory (the 2:3 canvas only exists in that tier).
 - `backend="pyav"` for video decode (no system libav\* on nodes).
